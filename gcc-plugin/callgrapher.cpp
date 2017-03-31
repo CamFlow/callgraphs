@@ -105,10 +105,9 @@ void Callgrapher::dumpInDb(const FunctionDecl& fn)
 	int id = insert(db.get(), fn, fnInserter.get());
 	for (const FunctionDecl& otherFn : _functions) {
 		int otherId = getIndex(db.get(), otherFn, finder.get(), staticFinder.get());
-		if (otherId == -1) {
+		if (otherId == -1)
 			otherId = insert(db.get(), otherFn, fnInserter.get());
-			insertCall(db.get(), id, otherId, fnCallInserter.get());
-		}
+		insertCall(db.get(), id, otherId, fnCallInserter.get());
 	}
 }
 
