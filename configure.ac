@@ -4,7 +4,7 @@
 AC_PREREQ([2.69])
 AC_INIT([Kayrebt::Callgraphs], [0.1], [laurent.georget@supelec.fr])
 AM_INIT_AUTOMAKE([1.11 foreign -Wall -Werror])
-AC_CONFIG_SRCDIR([src/callgraphs.cpp])
+AC_CONFIG_SRCDIR([gcc-plugin/callgraphs.cpp])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIRS([m4])
 AC_LANG([C++])
@@ -51,7 +51,7 @@ AC_TYPE_SIZE_T
 
 # Checks for library functions.
 
-AC_CONFIG_FILES([Makefile src/Makefile])
+AC_CONFIG_FILES([Makefile gcc-plugin/Makefile])
 AC_SUBST([SQLITE3_CFLAGS])
 AC_SUBST([SQLITE3_LIBS])
 AC_OUTPUT
