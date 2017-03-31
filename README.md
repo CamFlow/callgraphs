@@ -87,3 +87,13 @@ Import your databases into a graph database like Neo4J will make processing the 
 
 The plugin only tracks static function calls, and does not care about compiler builtins or calls through function pointers.
 This could be added to a future version.
+
+## TODOs
+
+* Make SQLITE3 an optional dependency/optionally compilable
+* Implement a Neo4J binder like the SQLITE3 one (?)
+* Optionally track builtins
+* Optionally track dynamic function calls
+* Publish releases as .tar.gz archives
+* Collect more information/statistics from calls (what information?) (?)
+* Make this more GNU compliant (INSTALL, COPYING, MAINTAINERS, ChangeLog, etc.)
