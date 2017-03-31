@@ -58,61 +58,62 @@ void Callgrapher::findAllCalls()
 		try {
 			dumpInDb(fn);
 		} catch (std::runtime_error& e) {
-			fprintf(stderr, "Couldn't store functions in database: %s", e.what());
+			fprintf(stderr, "Couldn't store functions in database: %s\n", e.what());
 		}
 	}
 }
 
+sqlite3_stmt* Callgrapher::prepareStmt(const std::string& stmt)
+{
+	sqlite3_stmt* newStmt = nullptr;
+	if (sqlite3_prepare_v2(_db.get(), stmt.c_str(), stmt.length()+1, &newStmt, nullptr) != SQLITE_OK) {
+		throw std::runtime_error(sqlite3_errmsg(_db.get()));
+	}
+
+	return newStmt;
+}
+
 void Callgrapher::dumpInDb(const FunctionDecl& fn)
 {
-	sqlite3* p_db = nullptr;
-	if (sqlite3_open(_dbFile.c_str(), &p_db) != SQLITE_OK) {
-		throw std::runtime_error(sqlite3_errmsg(p_db));
+	sqlite3* db = nullptr;
+	if (sqlite3_open(_dbFile.c_str(), &db) != SQLITE_OK) {
+		throw std::runtime_error(sqlite3_errmsg(db));
 	}
-	std::unique_ptr<sqlite3,std::function<void(sqlite3*)>> db{p_db,&sqlite3_close};
+	_db.reset(db);
 
-	std::string stmt = "SELECT Id FROM functions WHERE Global=1 AND Name=?1;";
-	sqlite3_stmt* p_finder = nullptr;
-	if (sqlite3_prepare_v2(db.get(), stmt.c_str(), stmt.length()+1, &p_finder, nullptr) != SQLITE_OK) {
-		throw std::runtime_error(sqlite3_errmsg(p_db));
+	_globalFnFinder.reset(prepareStmt("SELECT Id FROM functions WHERE Global=1 AND Name=?1;"));
+	_staticFnFinder.reset(prepareStmt("SELECT Id FROM functions WHERE Global=0 AND Name=?1 AND File=?2;"));
+	_fnInserter.reset(prepareStmt("INSERT INTO functions (Name,File,Line,Global) VALUES (?1,?2,?3,?4);"));
+	_fnUpdater.reset(prepareStmt("UPDATE functions SET File=?1,Line=?2 WHERE Id=?3;"));
+	_callInserter.reset(prepareStmt("INSERT INTO calls (Caller,Callee) VALUES (?1,?2);"));
+	_callFinder.reset(prepareStmt("SELECT * FROM calls WHERE caller=?1;"));
+
+	int id = getIndex(fn);
+	bool registered;
+	if (id == -1) {
+		registered = false;
+		id = insert(fn);
+	} else {
+		registered = alreadyRegistered(id);
+		if (!registered)
+			update(fn, id);
 	}
-	std::unique_ptr<sqlite3_stmt,std::function<void(sqlite3_stmt*)>> finder{p_finder,&sqlite3_finalize};
 
-	stmt = "SELECT Id FROM functions WHERE Global=0 AND Name=?1 AND File=?2;";
-	sqlite3_stmt* p_staticFinder = nullptr;
-	if (sqlite3_prepare_v2(db.get(), stmt.c_str(), stmt.length()+1, &p_staticFinder, nullptr) != SQLITE_OK) {
-		throw std::runtime_error(sqlite3_errmsg(p_db));
-	}
-	std::unique_ptr<sqlite3_stmt,std::function<void(sqlite3_stmt*)>> staticFinder{p_staticFinder,&sqlite3_finalize};
-
-	if (getIndex(db.get(), fn, finder.get(), staticFinder.get()) != -1)
-		return;
-
-	stmt = "INSERT INTO functions (Name,File,Line,Global) VALUES (?1,?2,?3,?4);";
-	sqlite3_stmt* p_fnInserter = nullptr;
-	if (sqlite3_prepare_v2(db.get(), stmt.c_str(), stmt.length()+1, &p_fnInserter, nullptr) != SQLITE_OK) {
-		throw std::runtime_error(sqlite3_errmsg(db.get()));
-	}
-	std::unique_ptr<sqlite3_stmt,std::function<void(sqlite3_stmt*)>> fnInserter{p_fnInserter,&sqlite3_finalize};
-
-	stmt = "INSERT INTO calls (Caller,Callee) VALUES (?1,?2);";
-	sqlite3_stmt* p_fnCallInserter = nullptr;
-	if (sqlite3_prepare_v2(db.get(), stmt.c_str(), stmt.length()+1, &p_fnCallInserter, nullptr) != SQLITE_OK) {
-		throw std::runtime_error(sqlite3_errmsg(p_db));
-	}
-	std::unique_ptr<sqlite3_stmt,std::function<void(sqlite3_stmt*)>> fnCallInserter{p_fnCallInserter,&sqlite3_finalize};
-
-	int id = insert(db.get(), fn, fnInserter.get());
-	for (const FunctionDecl& otherFn : _functions) {
-		int otherId = getIndex(db.get(), otherFn, finder.get(), staticFinder.get());
-		if (otherId == -1)
-			otherId = insert(db.get(), otherFn, fnInserter.get());
-		insertCall(db.get(), id, otherId, fnCallInserter.get());
+	if (!registered) {
+		for (const FunctionDecl& otherFn : _functions) {
+			int otherId = getIndex(otherFn);
+			if (otherId == -1)
+				otherId = insert(otherFn);
+			insertCall(id, otherId);
+		}
 	}
 }
 
-int Callgrapher::insert(sqlite3* db, const FunctionDecl& fn, sqlite3_stmt* fnInserter)
+int Callgrapher::insert(const FunctionDecl& fn)
 {
+	sqlite3_stmt* fnInserter = _fnInserter.get();
+	sqlite3* db = _db.get();
+
 	sqlite3_bind_text(fnInserter, 1, fn.getName().c_str(), fn.getName().length(), SQLITE_STATIC);
 	sqlite3_bind_text(fnInserter, 2, fn.getFile().c_str(), fn.getFile().length(), SQLITE_STATIC);
 	sqlite3_bind_int(fnInserter, 3, fn.getLine());
@@ -124,26 +125,47 @@ int Callgrapher::insert(sqlite3* db, const FunctionDecl& fn, sqlite3_stmt* fnIns
 	return sqlite3_last_insert_rowid(db);
 }
 
-void Callgrapher::insertCall(sqlite3* db, int caller, int callee, sqlite3_stmt* fnCallInserter)
+void Callgrapher::insertCall(int caller, int callee)
 {
-	sqlite3_bind_int(fnCallInserter, 1, caller);
-	sqlite3_bind_int(fnCallInserter, 2, callee);
-	if (sqlite3_step(fnCallInserter) != SQLITE_DONE) {
+	sqlite3_stmt* callInserter = _callInserter.get();
+	sqlite3* db = _db.get();
+
+	sqlite3_bind_int(callInserter, 1, caller);
+	sqlite3_bind_int(callInserter, 2, callee);
+	if (sqlite3_step(callInserter) != SQLITE_DONE) {
 		throw std::runtime_error(sqlite3_errmsg(db));
 	}
-	sqlite3_reset(fnCallInserter);
+	sqlite3_reset(callInserter);
 }
 
-int Callgrapher::getIndex(sqlite3* db, const FunctionDecl& fn, sqlite3_stmt* finder, sqlite3_stmt* staticFinder)
+void Callgrapher::update(const FunctionDecl& fn, int id)
 {
+	sqlite3_stmt* fnUpdater = _fnUpdater.get();
+	sqlite3* db = _db.get();
+
+	sqlite3_bind_text(fnUpdater, 1, fn.getFile().c_str(), fn.getFile().length(), SQLITE_STATIC);
+	sqlite3_bind_int(fnUpdater, 2, fn.getLine());
+	sqlite3_bind_int(fnUpdater, 3, id);
+	if (sqlite3_step(fnUpdater) != SQLITE_DONE) {
+		throw std::runtime_error(sqlite3_errmsg(db));
+	}
+	sqlite3_reset(fnUpdater);
+}
+
+int Callgrapher::getIndex(const FunctionDecl& fn)
+{
+	sqlite3_stmt* staticFnFinder = _staticFnFinder.get();
+	sqlite3_stmt* globalFnFinder = _globalFnFinder.get();
+	sqlite3* db = _db.get();
+
 	sqlite3_stmt* stmt;
 	if (fn.isGlobal()) {
-		sqlite3_bind_text(finder, 1, fn.getName().c_str(), fn.getName().length(), SQLITE_STATIC);
-		stmt = finder;
+		sqlite3_bind_text(globalFnFinder, 1, fn.getName().c_str(), fn.getName().length(), SQLITE_STATIC);
+		stmt = globalFnFinder;
 	} else {
-		sqlite3_bind_text(staticFinder, 1, fn.getName().c_str(), fn.getName().length(), SQLITE_STATIC);
-		sqlite3_bind_text(staticFinder, 2, fn.getFile().c_str(), fn.getFile().length(), SQLITE_STATIC);
-		stmt = staticFinder;
+		sqlite3_bind_text(staticFnFinder, 1, fn.getName().c_str(), fn.getName().length(), SQLITE_STATIC);
+		sqlite3_bind_text(staticFnFinder, 2, fn.getFile().c_str(), fn.getFile().length(), SQLITE_STATIC);
+		stmt = staticFnFinder;
 	}
 
 	int ret;
@@ -161,3 +183,28 @@ int Callgrapher::getIndex(sqlite3* db, const FunctionDecl& fn, sqlite3_stmt* fin
 	sqlite3_reset(stmt);
 	return ret;
 }
+
+bool Callgrapher::alreadyRegistered(int caller)
+{
+	sqlite3_stmt* callFinder = _callFinder.get();
+	sqlite3* db = _db.get();
+
+	sqlite3_bind_int(callFinder, 1, caller);
+
+	bool ret;
+	switch (sqlite3_step(callFinder)) {
+		case SQLITE_ROW:
+			ret = true;
+			break;
+		case SQLITE_DONE:
+			ret = false;
+			break;
+		default:
+			throw std::runtime_error(sqlite3_errmsg(db));
+	}
+
+	sqlite3_reset(callFinder);
+	return ret;
+}
+
+
