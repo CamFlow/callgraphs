@@ -97,3 +97,4 @@ This could be added to a future version.
 * Publish releases as .tar.gz archives
 * Collect more information/statistics from calls (what information?) (?)
 * Make this more GNU compliant (INSTALL, COPYING, MAINTAINERS, ChangeLog, etc.)
+* Document the code with Doxygen
